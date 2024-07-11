@@ -17,13 +17,13 @@ import (
 	"github.com/chainguard-dev/clog"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/empty"
-	"github.com/hashicorp/terraform-plugin-log/tflog"
 	coci "github.com/sigstore/cosign/v2/pkg/oci"
+	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/errgroup"
 	"k8s.io/apimachinery/pkg/util/sets"
 )
 
-func fromImageData(ctx context.Context, ic types.ImageConfiguration, popts ProviderOpts) (*options.Options, *types.ImageConfiguration, error) {
+func fromImageData(ic types.ImageConfiguration, popts ProviderOpts) (*options.Options, *types.ImageConfiguration, error) {
 	// Deduplicate any of the extra packages against their potentially resolved
 	// form in the actual image list.
 	pkgs := sets.New(ic.Contents.Packages...)
@@ -81,23 +81,19 @@ type imagesbom struct {
 	predicateSHA256 string
 }
 
-func doBuild(ctx context.Context, data BuildResourceModel) (v1.Hash, coci.SignedEntity, map[string]imagesbom, error) {
+func doBuild(ctx context.Context, ic types.ImageConfiguration, data BuildResourceModel) (v1.Hash, coci.SignedEntity, map[string]imagesbom, error) {
+	ctx, span := otel.Tracer("terraform-provider-apko").Start(ctx, "doBuild")
+	defer span.End()
+
 	tempDir, err := os.MkdirTemp("", "apko-*")
 	if err != nil {
 		return v1.Hash{}, nil, nil, fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
-	var ic types.ImageConfiguration
-	if diags := assignValue(data.Config, &ic); diags.HasError() {
-		return v1.Hash{}, nil, nil, fmt.Errorf("assigning value: %v", diags.Errors())
-	}
-
-	tflog.Trace(ctx, fmt.Sprintf("Got image configuration: %#v", ic))
-
 	// Parse things once to determine the architectures to build from
 	// the config.
-	o, ic2, err := fromImageData(ctx, ic, data.popts)
+	o, ic2, err := fromImageData(ic, data.popts)
 	if err != nil {
 		return v1.Hash{}, nil, nil, err
 	}

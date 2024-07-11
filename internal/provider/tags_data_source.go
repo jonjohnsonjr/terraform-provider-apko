@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"go.opentelemetry.io/otel"
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
@@ -82,6 +83,12 @@ func (d *TagsDataSource) Configure(_ context.Context, req datasource.ConfigureRe
 }
 
 func (d *TagsDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	parent, cancel := d.popts.TraceParent(ctx)
+	defer cancel()
+
+	_, span := otel.Tracer("terraform-provider-apko").Start(parent, "TagsDataSource.Read")
+	defer span.End()
+
 	var data TagsDataSourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -134,7 +141,7 @@ func (d *TagsDataSource) Read(ctx context.Context, req datasource.ReadRequest, r
 	}
 
 	if found == "" {
-    resp.Diagnostics.AddError(fmt.Sprintf("Unable to find package: %s...", data.TargetPackage.ValueString()), fmt.Sprintf("...in package list:\n\t%s", strings.Join(ic.Contents.Packages, "\n\t")))
+		resp.Diagnostics.AddError(fmt.Sprintf("Unable to find package: %s...", data.TargetPackage.ValueString()), fmt.Sprintf("...in package list:\n\t%s", strings.Join(ic.Contents.Packages, "\n\t")))
 		return
 	}
 

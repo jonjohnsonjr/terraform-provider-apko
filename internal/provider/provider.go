@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/v1/google"
@@ -20,6 +21,8 @@ type Provider struct {
 
 	repositories, buildRespositories, packages, keyring, archs []string
 	anns                                                       map[string]string
+
+	traceParent context.Context
 }
 
 type ProviderModel struct {
@@ -35,6 +38,16 @@ type ProviderOpts struct {
 	repositories, buildRespositories, packages, keyring, archs []string
 	anns                                                       map[string]string
 	ropts                                                      []remote.Option
+	traceParent                                                context.Context
+}
+
+func (p ProviderOpts) TraceParent(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(24 * time.Hour)
+	}
+
+	return context.WithDeadline(p.traceParent, deadline)
 }
 
 func (p *Provider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -125,6 +138,7 @@ func (p *Provider) Configure(ctx context.Context, req provider.ConfigureRequest,
 		archs:              append(p.archs, data.DefaultArchs...),
 		anns:               combineMaps(p.anns, data.DefaultAnnotations),
 		ropts:              ropts,
+		traceParent:        p.traceParent,
 	}
 
 	// Make provider opts available to resources and data sources.
@@ -145,10 +159,11 @@ func (p *Provider) DataSources(ctx context.Context) []func() datasource.DataSour
 	}
 }
 
-func New(version string) func() provider.Provider {
+func New(ctx context.Context, version string) func() provider.Provider {
 	return func() provider.Provider {
 		return &Provider{
-			version: version,
+			version:     version,
+			traceParent: ctx,
 		}
 	}
 }

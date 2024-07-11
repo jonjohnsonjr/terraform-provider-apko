@@ -3,12 +3,17 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
+	"os"
 
 	"github.com/chainguard-dev/terraform-provider-apko/internal/provider"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/sdk/trace"
 )
 
 //go:generate terraform fmt -recursive ./examples/
@@ -26,7 +31,35 @@ func main() {
 		Debug:   debug,
 	}
 
-	if err := providerserver.Serve(context.Background(), provider.New(version), opts); err != nil {
+	ctx := context.Background()
+	if traceDir := os.Getenv("TF_APKO_TRACES"); traceDir != "" {
+		if err := os.MkdirAll(traceDir, 0755); err != nil {
+			log.Fatal(err.Error())
+		}
+		w, err := os.CreateTemp(traceDir, "tf-apko-trace.*.json")
+		if err != nil {
+			panic(fmt.Errorf("creating trace file: %w", err))
+		}
+		defer w.Close()
+		exporter, err := stdouttrace.New(stdouttrace.WithWriter(w))
+		if err != nil {
+			panic(fmt.Errorf("creating stdout exporter: %w", err))
+		}
+		tp := trace.NewTracerProvider(trace.WithBatcher(exporter))
+		otel.SetTracerProvider(tp)
+
+		defer func() {
+			if err := tp.Shutdown(context.WithoutCancel(ctx)); err != nil {
+				log.Printf("shutting down trace provider: %v", err)
+			}
+		}()
+
+		tctx, span := otel.Tracer("terraform-provider-apko").Start(ctx, "terraform-provider-apko")
+		defer span.End()
+		ctx = tctx
+	}
+
+	if err := providerserver.Serve(context.Background(), provider.New(ctx, version), opts); err != nil {
 		log.Fatal(err.Error())
 	}
 }

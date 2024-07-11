@@ -22,6 +22,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"go.opentelemetry.io/otel"
 	"golang.org/x/sync/errgroup"
 	"gopkg.in/yaml.v2"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -109,6 +110,12 @@ func (d *ConfigDataSource) Configure(_ context.Context, req datasource.Configure
 }
 
 func (d *ConfigDataSource) Read(ctx context.Context, req datasource.ReadRequest, resp *datasource.ReadResponse) {
+	parent, cancel := d.popts.TraceParent(ctx)
+	defer cancel()
+
+	tctx, span := otel.Tracer("terraform-provider-apko").Start(parent, "ConfigDataSource.Read")
+	defer span.End()
+
 	var data ConfigDataSourceModel
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -172,7 +179,7 @@ func (d *ConfigDataSource) Read(ctx context.Context, req datasource.ReadRequest,
 
 	// Resolve the package list to specific versions (as much as we can with
 	// multi-arch), and overwrite the package list in the ImageConfiguration.
-	pl, diags := d.resolvePackageList(ctx, ic)
+	pl, diags := d.resolvePackageList(tctx, ic)
 	resp.Diagnostics = append(resp.Diagnostics, diags...)
 	if diags.HasError() {
 		return
@@ -212,7 +219,10 @@ func writeFile(dir, hash, variant string, ic apkotypes.ImageConfiguration) error
 }
 
 func (d *ConfigDataSource) resolvePackageList(ctx context.Context, ic apkotypes.ImageConfiguration) ([]string, diag.Diagnostics) {
-	_, ic2, err := fromImageData(ctx, ic, d.popts)
+	ctx, span := otel.Tracer("terraform-provider-apko").Start(ctx, "resolvePackageList")
+	defer span.End()
+
+	_, ic2, err := fromImageData(ic, d.popts)
 	if err != nil {
 		return nil, diag.Diagnostics{diag.NewErrorDiagnostic("Unable to parse apko config", err.Error())}
 	}

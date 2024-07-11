@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	apkotypes "chainguard.dev/apko/pkg/build/types"
 	"github.com/chainguard-dev/terraform-provider-oci/pkg/validators"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
@@ -18,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"go.opentelemetry.io/otel"
 )
 
 var _ resource.Resource = &BuildResource{}
@@ -141,6 +143,12 @@ func (r *BuildResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 }
 
 func (r *BuildResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	parent, cancel := r.popts.TraceParent(ctx)
+	defer cancel()
+
+	tctx, span := otel.Tracer("terraform-provider-apko").Start(parent, "BuildResource.Create")
+	defer span.End()
+
 	var data *BuildResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -154,7 +162,15 @@ func (r *BuildResource) Create(ctx context.Context, req resource.CreateRequest, 
 		return
 	}
 
-	digest, se, sboms, err := doBuild(ctx, *data)
+	var ic apkotypes.ImageConfiguration
+	if diags := assignValue(data.Config, &ic); diags.HasError() {
+		resp.Diagnostics.AddError("Client Error", fmt.Errorf("assigning value: %v", diags.Errors()).Error())
+		return
+	}
+
+	tflog.Trace(ctx, fmt.Sprintf("Got image configuration: %#v", ic))
+
+	digest, se, sboms, err := doBuild(tctx, ic, *data)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", err.Error())
 		return
@@ -172,7 +188,9 @@ func (r *BuildResource) Create(ctx context.Context, req resource.CreateRequest, 
 		resp.Diagnostics.AddError("NewPusher", err.Error())
 		return
 	}
-	if err := retry(ctx, longBackoff, func(ctx context.Context) error {
+	if err := retry(tctx, longBackoff, func(ctx context.Context) error {
+		ctx, span := otel.Tracer("terraform-provider-apko").Start(ctx, "push")
+		defer span.End()
 		return pusher.Push(ctx, dig, pushable)
 	}); err != nil {
 		resp.Diagnostics.AddError("Error publishing "+dig.String(), err.Error())
@@ -221,6 +239,12 @@ func (r *BuildResource) Read(ctx context.Context, req resource.ReadRequest, resp
 }
 
 func (r *BuildResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	parent, cancel := r.popts.TraceParent(ctx)
+	defer cancel()
+
+	tctx, span := otel.Tracer("terraform-provider-apko").Start(parent, "BuildResource.Update")
+	defer span.End()
+
 	var data *BuildResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
 	if resp.Diagnostics.HasError() {
@@ -234,7 +258,13 @@ func (r *BuildResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		return
 	}
 
-	digest, _, _, err := doBuild(ctx, *data)
+	var ic apkotypes.ImageConfiguration
+	if diags := assignValue(data.Config, &ic); diags.HasError() {
+		resp.Diagnostics.AddError("Client Error", fmt.Errorf("assigning value: %v", diags.Errors()).Error())
+		return
+	}
+
+	digest, _, _, err := doBuild(tctx, ic, *data)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", err.Error())
 		return
